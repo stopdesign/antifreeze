@@ -1,0 +1,23 @@
+/config/*.yaml
+*_local.*
+*.bak
+
+# File system caches
+.DS_Store
+._*
+
+# IDE system files
+.idea
+.vscode
+*.sublime-workspace
+*.sublime-project
+
+# Deploy
+.env
+.venv
+/builds
+/cache
+
+# Temporary files
+*.py[oc]
+*~
