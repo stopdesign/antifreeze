@@ -1,0 +1,5 @@
+aiogram==2.25.1
+dbus-fast==1.84.2
+coloredlogs==15.0.1
+PyYAML==5.4.1
+pydantic==1.10.7

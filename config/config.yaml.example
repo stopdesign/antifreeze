@@ -1,0 +1,15 @@
+
+telegram:
+  token: 00000000:********
+
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  db: 0
+  password: null
+
+
+ibc:
+  host: 127.0.0.1
+  port: 7462
