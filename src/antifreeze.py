@@ -145,7 +145,7 @@ async def service_status():
     return txt.strip().replace(" ", " ") + "\n⠀", retry
 
 
-async def get_service_status(name: str) -> str:
+async def get_service_status(service_name: str) -> str:
     # получить статусы сервисов systemctl (названия в конфиге)
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     name = "org.freedesktop.systemd1"
@@ -153,7 +153,7 @@ async def get_service_status(name: str) -> str:
     introspection = await bus.introspect(name, path)
     obj = bus.get_proxy_object(name, path, introspection)
     manager = obj.get_interface(f"{name}.Manager")
-    unit = await manager.call_load_unit(name)  # type: ignore
+    unit = await manager.call_load_unit(service_name)  # type: ignore
     obj = bus.get_proxy_object(name, unit, introspection)
     prop = obj.get_interface("org.freedesktop.DBus.Properties")
     state = await prop.call_get(f"{name}.Unit", "ActiveState")  # type: ignore
@@ -210,14 +210,14 @@ def parse_on_off(value: str) -> dict:
     return res
 
 
-async def stop_ibgw():
+async def stop_ibgw(service_name: str):
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     name = "org.freedesktop.systemd1"
     path = "/org/freedesktop/systemd1"
     introspection = await bus.introspect(name, path)
     obj = bus.get_proxy_object(name, path, introspection)
     manager = obj.get_interface(f"{name}.Manager")
-    job = await manager.call_restart_unit("ibgw.service", "fail")  # type: ignore
+    job = await manager.call_restart_unit(service_name, "fail")  # type: ignore
     print(job)
 
 
@@ -330,7 +330,7 @@ class AntifreezeBot:
 
     async def tg_gw_stop(self, message: Message):
         await self.typing(message)
-        await stop_ibgw()
+        await stop_ibgw("ibgw-paper.service")  # FIXME: убрать хардкодинг
         log.info(f"gw stopped")
         await message.answer(f"Ok")
 
