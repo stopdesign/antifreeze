@@ -95,8 +95,8 @@ async def ibgw_status():
         txt = txt.replace(" nan", "   ·")
         txt = txt.strip().replace(" ", " ") + "\n⠀"
 
-    except:
-        pass
+    except Exception as e:
+        txt = f"ERROR: {e}"
 
     finally:
         ib.disconnect()
@@ -109,9 +109,9 @@ async def service_status():
 
     # FIXME: взять из конфига
     services = {
-        "Gateway": "ibgw.service",
-        "Sync": "sync.service",
-        "Trading Bot": "trading.service",
+        "Gateway-l": "ibgw-life.service",
+        "Gateway-p": "ibgw-paper.service",
+#        "Trading Bot": "trading.service",
     }
 
     txt += "\nServices\n==========================\n"
