@@ -39,6 +39,11 @@ class IbcConfig(BaseModel):
     port: int = 6379
 
 
+class GatewayConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 4001
+
+
 # Прочитать конфиг из файла
 try:
     config = yaml.full_load(open(args.config))
@@ -52,6 +57,7 @@ class AppConfig(BaseSettings):
     telegram: TelegramConfig = TelegramConfig(**config.get("telegram", {}))
     ibc: IbcConfig = IbcConfig(**config.get("ibc", {}))
     redis: RedisConfig = RedisConfig(**config.get("redis", {}))
+    gateway: GatewayConfig = GatewayConfig(**config.get("gateway", {}))
 
 
 # Типа Singleton, чтобы не повторять загрузку конфига

@@ -13,3 +13,8 @@ redis:
 ibc:
   host: 127.0.0.1
   port: 7462
+
+
+gateway:
+  host: 10.0.10.1
+  port: 4001

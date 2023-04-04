@@ -1,5 +1,6 @@
-aiogram==2.25.1
+aiogram==3.0.0b7
 dbus-fast==1.84.2
 coloredlogs==15.0.1
 PyYAML==5.4.1
 pydantic==1.10.7
+git+ssh://git@github.com/stopdesign/ib_sync@main#egg=ib_sync
