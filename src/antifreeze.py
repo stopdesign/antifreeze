@@ -109,7 +109,7 @@ async def service_status():
 
     # FIXME: взять из конфига
     services = {
-        "Gateway-l": "ibgw-life.service",
+        "Gateway-l": "ibgw-live.service",
         "Gateway-p": "ibgw-paper.service",
 #        "Trading Bot": "trading.service",
     }
