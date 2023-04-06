@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, BaseSettings
 
-log = logging.getLogger("dashboard.settings")
+log = logging.getLogger("antifreeze.settings")
 
 
 BASE_DIR = Path(__file__).parent
@@ -30,18 +30,18 @@ class RedisConfig(BaseModel):
 class TelegramConfig(BaseModel):
     token: str = ""
     chat_id: int = 0
-    reload: bool = False
     admins: list = []
 
 
 class IbcConfig(BaseModel):
     host: str = "127.0.0.1"
-    port: int = 6379
+    port: int = 7462
 
 
 class GatewayConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 4001
+    client_id: int = 999
 
 
 # Прочитать конфиг из файла

@@ -1,16 +1,16 @@
 import asyncio
 import json
 import logging
-import signal
 import re
+import signal
 import socket
-from datetime import datetime
+from functools import wraps
 from time import monotonic, sleep
 
 import coloredlogs
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatAction
-from aiogram.filters import Command, Text
+from aiogram.filters import Command, Filter, Text
 from aiogram.types import KeyboardButton, Message
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.utils.markdown import hpre
@@ -24,6 +24,9 @@ from settings import app_config
 fmt = "%(asctime).19s • %(levelname).1s • %(name)s • %(message)s"
 coloredlogs.install("INFO", fmt=fmt)
 log = logging.getLogger("antifreeze")
+
+logging.getLogger("ib_api.client").setLevel(logging.ERROR)
+logging.getLogger("ib_api.ib_sync").setLevel(logging.ERROR)
 
 
 """
@@ -43,16 +46,47 @@ IBC_PORT = app_config.ibc.port
 
 GATEWAY_HOST = app_config.gateway.host
 GATEWAY_PORT = app_config.gateway.port
-CLIENT_ID = 999
+CLIENT_ID = app_config.gateway.client_id
 
+ADMINS = app_config.telegram.admins
+
+
+async def ibgw_short_status():
+    ib = IBSync()
+
+    txt = ""
+    try:
+        ib.connect(GATEWAY_HOST, GATEWAY_PORT, clientId=CLIENT_ID)
+        IBThread(ib).start()
+
+        dt = monotonic()
+        while not sleep(0.01) and monotonic() - dt < 3:
+            if ib.nextValidOrderId > 0:
+                break
+
+        if not ib.nextValidOrderId > 0:
+            return "Not connected"
+
+        fields, positions = ib.get_account_info()
+        net_value = float(fields.get("NetLiquidation", "nan"))
+
+        txt = f"Net Value: {net_value:0.0f} USD"
+
+    except Exception as e:
+        txt = f"ERROR: {e}"
+
+    finally:
+        ib.disconnect()
+
+    return txt
 
 
 async def ibgw_status():
     ib = IBSync()
-    ib.connect(GATEWAY_HOST, GATEWAY_PORT, clientId=CLIENT_ID)
 
     txt = ""
     try:
+        ib.connect(GATEWAY_HOST, GATEWAY_PORT, clientId=CLIENT_ID)
         IBThread(ib).start()
 
         dt = monotonic()
@@ -111,7 +145,7 @@ async def service_status():
     services = {
         "Gateway-l": "ibgw-live.service",
         "Gateway-p": "ibgw-paper.service",
-#        "Trading Bot": "trading.service",
+        # "Trading Bot": "trading.service",
     }
 
     txt += "\nServices\n==========================\n"
@@ -164,7 +198,11 @@ def parse_ibs_status(status: str) -> tuple[dict, dict, dict, list]:
     gateway, market, historical, retry = {}, {}, {}, []
 
     try:
-        s = json.loads(status.replace("OK {", "{"))
+        if "OK {" not in str(status):
+            log.error(f"Bad status: {status}")
+            s = {}
+        else:
+            s = json.loads(status.replace("OK {", "{"))
     except Exception as e:
         log.error("Error parsing json from INFO")
         log.exception(e)
@@ -218,7 +256,7 @@ async def stop_ibgw(service_name: str):
     obj = bus.get_proxy_object(name, path, introspection)
     manager = obj.get_interface(f"{name}.Manager")
     job = await manager.call_restart_unit(service_name, "fail")  # type: ignore
-    print(job)
+    log.info(f"stop ibgw async job: {job}")
 
 
 def ibc_run_command(host, port, command):
@@ -244,42 +282,69 @@ def ibc_run_command(host, port, command):
     return status
 
 
+HANDLERS = []
+
+
+def restricted(filter: Filter, allowed_users: list):
+    """
+    Декоратор для регистрации обработчиков сообщений
+    с ограничением доступа по белому списку юзеров.
+    """
+
+    def decorator(function):
+        @wraps(function)
+        async def wrapper(obj, message):
+            chat = message.chat
+            if chat.type == "private" and chat.id in allowed_users:
+                return await function(obj, message)
+            else:
+                log.error(f"Unknown user: {message}")
+                return
+
+        HANDLERS.append((wrapper, filter))
+        return wrapper
+
+    return decorator
+
+
+# def register(filter):
+#     """
+#     Декоратор для регистрации обработчиков сообщений.
+#     """
+#     def decorator(function):
+#         HANDLERS.append((function, filter))
+#         return function
+#     return decorator
+
+
 class AntifreezeBot:
     bot: Bot
     dp: Dispatcher
 
     def __init__(self, loop) -> None:
-        self.user_id = None
+        self.subscribers = list(ADMINS) or []
         self.loop = loop
 
-        rr = Router()
+        self.router = Router()
         self.dp = Dispatcher()
-        self.dp.include_router(rr)
+        self.dp.include_router(self.router)
         self.bot = Bot(token=TG_TOKEN, parse_mode="HTML")
 
-        # self.dp.register_errors_handler(self.errors_handler)
-
-        rr.message.register(self.tg_start, Command(commands=["start"]))
-
-        rr.message.register(self.tg_account_info, Text(text="💰 Account⠀"))
-        rr.message.register(self.tg_service_info, Text(text="🚀 Service⠀"))
-
-        rr.message.register(self.tg_gw_stop, Command(commands=["gw_stop"]))
-
-        rr.message.register(self.tg_reconnect_account, Command(commands=["re_acc"]))
-        rr.message.register(self.tg_reconnect_data, Command(commands=["re_data"]))
-        rr.message.register(self.tg_ibc_restart, Command(commands=["ibc_restart"]))
-
-        self.dp.startup.register(self.on_startup)
-
-    async def on_startup(self, bot: Bot):
-        print("ON STARTUP", bot)
+        # Регистрация обработчиков
+        for callback, filter in HANDLERS:
+            func = getattr(self, callback.__name__)
+            self.router.message.register(func, filter)
 
     async def typing(self, message: Message):
         await self.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
     async def start_polling(self):
         log.info("Start bot")
+
+        # Не обрабатывать старые сообщения
+        # https://github.com/aiogram/aiogram/issues/418
+        await self.bot.delete_webhook(drop_pending_updates=True)
+
         await self.dp.start_polling(self.bot, skip_updates=True, handle_signals=False)
 
     async def _stop_bot(self):
@@ -292,11 +357,17 @@ class AntifreezeBot:
         log.error(f"Bot exception: {exception} | {update}")
 
     ##################################################
-    # Подключение бота
+    # Подключение бота и подписка на спам
 
+    @restricted(Command("start"), ADMINS)
     async def tg_start(self, message: Message):
-        self.user_id = message.from_user.id
-        log.info(f"Start spamming user_id {self.user_id}")
+        chat = message.chat
+
+        # log.error("from_user")
+        # log.info(json.dumps(message.from_user.__dict__, default=str, indent=4))
+
+        # log.error("chat")
+        # log.info(json.dumps(message.chat.__dict__, default=str, indent=4))
 
         builder = ReplyKeyboardBuilder()
         builder.row(
@@ -305,21 +376,38 @@ class AntifreezeBot:
         )
         markup = builder.as_markup(is_persistent=True, resize_keyboard=True)
 
-        await message.reply("Start", reply_markup=markup)
+        if chat.type == "private" and chat.id not in self.subscribers:
+            self.subscribers.append(chat.id)
+            log.info(f"Start spamming user {chat.username}")
+            await message.answer("OK", reply_markup=markup)
+        else:
+            await message.answer("Already started")
+
+    @restricted(Command("stop"), ADMINS)
+    async def tg_stop(self, message: Message):
+        if message.chat.id in self.subscribers:
+            self.subscribers.remove(message.chat.id)
+            log.info(f"Stop spamming user {message.chat.username}")
+            await message.answer("Stopped")
+        else:
+            await message.answer("Subscriber not found")
 
     ##################################################
     ## Команды IBC
 
+    @restricted(Command("re_data"), ADMINS)
     async def tg_reconnect_data(self, message: Message):
         await self.typing(message)
         res = ibc_run_command(IBC_HOST, IBC_PORT, "RECONNECTDATA")
         await message.answer(f"Result: {res}")
 
+    @restricted(Command("re_acc"), ADMINS)
     async def tg_reconnect_account(self, message: Message):
         await self.typing(message)
         res = ibc_run_command(IBC_HOST, IBC_PORT, "RECONNECTACCOUNT")
         await message.answer(f"Result: {res}")
 
+    @restricted(Command("ibc_restart"), ADMINS)
     async def tg_ibc_restart(self, message: Message):
         await self.typing(message)
         res = ibc_run_command(IBC_HOST, IBC_PORT, "RESTART")
@@ -328,22 +416,24 @@ class AntifreezeBot:
     ##################################################
     ## Команды Systemd
 
+    @restricted(Command("gw_stop"), ADMINS)
     async def tg_gw_stop(self, message: Message):
         await self.typing(message)
         await stop_ibgw("ibgw-paper.service")  # FIXME: убрать хардкодинг
         log.info(f"gw stopped")
         await message.answer(f"Ok")
 
-
     ##################################################
     ## Запрос информации
 
+    @restricted(Text("💰 Account⠀"), ADMINS)
     async def tg_account_info(self, message: Message):
         log.info(f"Account info requested")
         await self.typing(message)
         res = await ibgw_status()
         await message.answer(f"{hpre(res)}")
 
+    @restricted(Text("🚀 Service⠀"), ADMINS)
     async def tg_service_info(self, message: Message):
         log.info(f"Service info requested")
         await self.typing(message)
@@ -357,10 +447,17 @@ class AntifreezeBot:
 
     ##################################################
 
-    async def send_time(self, msg: str):
-        if self.user_id:
+    async def periodic_status(self, msg: str):
+        for user_id in self.subscribers:
             try:
-                await self.bot.send_message(self.user_id, msg)
+                await self.bot.send_message(user_id, msg, disable_notification=True)
+            except Exception as e:
+                log.error(e)
+
+    async def error_alert(self, msg: str):
+        for user_id in ADMINS:
+            try:
+                await self.bot.send_message(user_id, msg)
             except Exception as e:
                 log.error(e)
 
@@ -377,11 +474,13 @@ class Tester:
         # Loop forever, checking the system time every second
         prev_dt = monotonic()
         while self.run:
-            if monotonic() - prev_dt > 600:
+            if monotonic() - prev_dt > 1800:
                 prev_dt = monotonic()
-                now = datetime.now()
-                print(f"Current time: {now.strftime('%H:%M:%S')}")
-                await self.bot.send_time(now.strftime("%H:%M:%S"))
+                res = await ibgw_short_status()
+                if "ERROR" in res:
+                    await self.bot.error_alert(res)
+                else:
+                    await self.bot.periodic_status(res)
             await asyncio.sleep(0.01)
         log.error("TESTER OUT")
 
