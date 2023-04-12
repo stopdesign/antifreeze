@@ -13,8 +13,7 @@ clean: # Clean project
 	find . -name "*.orig" -delete
 
 pip: # Install python dependencies
-	$(VENV) pip install -r $(BASE_DIR)/requirements.txt \
-	--upgrade -q --no-python-version-warning
+	$(VENV) pip install -r $(BASE_DIR)/requirements.txt --upgrade
 
 run: # Run telegram bot
 	$(VENV) python antifreeze.py
