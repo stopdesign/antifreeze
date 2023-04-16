@@ -151,9 +151,10 @@ async def service_status():
     div = "==========================\n"
 
     # Статусы сервисов systemd
-    for service in TO_CHECK:
-        txt += f"\n{service}\n" + div
+    for s in TO_CHECK:
+        txt += f"\n{s}\n" + div
         try:
+            service = s if ".service" in s else f"{s}.service"
             txt += await check_service(service)
         except:
             txt += "Status                  --\n"
@@ -180,11 +181,11 @@ async def service_status():
     return txt.strip().replace(" ", " ") + "\n⠀", retry
 
 
-async def check_service(service_name: str) -> str:
+async def check_service(service: str) -> str:
     res = ""
-    names = ["ActiveState", "SubState", "StateChangeTimestamp"]
+    props = ["ActiveState", "SubState", "StateChangeTimestamp"]
 
-    values = await service_properties(service_name, names)
+    values = await service_properties(service, props)
     status = "{ActiveState}, {SubState}".format(**values)
     res += f"State {status:>20}\n"
 
@@ -199,9 +200,8 @@ async def check_service(service_name: str) -> str:
 async def systemd_command(command: str) -> None:
     if command not in ["start", "stop", "restart"]:
         raise ValueError(f"Unknown command {command}")
-    for service in TO_CONTROL:
-        if ".service" not in service:
-            service += ".service"
+    for s in TO_CONTROL:
+        service = s if ".service" in s else f"{s}.service"
         await service_command(service, command)
 
 
