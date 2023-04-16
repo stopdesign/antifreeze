@@ -44,6 +44,11 @@ class GatewayConfig(BaseModel):
     client_id: int = 999
 
 
+class SystemdConfig(BaseModel):
+    check: list = []
+    control: list = []
+
+
 # Прочитать конфиг из файла
 try:
     config = yaml.full_load(open(args.config))
@@ -58,6 +63,7 @@ class AppConfig(BaseSettings):
     ibc: IbcConfig = IbcConfig(**config.get("ibc", {}))
     redis: RedisConfig = RedisConfig(**config.get("redis", {}))
     gateway: GatewayConfig = GatewayConfig(**config.get("gateway", {}))
+    systemd: SystemdConfig = SystemdConfig(**config.get("systemd", {}))
 
 
 # Типа Singleton, чтобы не повторять загрузку конфига

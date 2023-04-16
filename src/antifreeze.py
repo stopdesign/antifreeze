@@ -1,11 +1,10 @@
 import asyncio
-import json
 import logging
-import re
 import signal
-import socket
+from datetime import datetime
 from functools import wraps
 from time import monotonic, sleep
+from zoneinfo import ZoneInfo
 
 import coloredlogs
 from aiogram import Bot, Dispatcher, Router
@@ -14,11 +13,11 @@ from aiogram.filters import Command, Filter, Text
 from aiogram.types import KeyboardButton, Message
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.utils.markdown import hpre
-from dbus_fast import BusType
-from dbus_fast.aio.message_bus import MessageBus
 from ib_sync import IBSync, IBThread
 
+from ibc_client import IbcClient
 from settings import app_config
+from systemd import service_command, service_properties
 
 # Enable logging
 fmt = "%(asctime).19s • %(levelname).1s • %(name)s • %(message)s"
@@ -38,17 +37,23 @@ gw_start - Start gateway sevice
 gw_stop - Stop gateway sevice
 """
 
+TIME_ZONE = ZoneInfo("America/Los_Angeles")
 
 TG_TOKEN = app_config.telegram.token
-
-IBC_HOST = app_config.ibc.host
-IBC_PORT = app_config.ibc.port
 
 GATEWAY_HOST = app_config.gateway.host
 GATEWAY_PORT = app_config.gateway.port
 CLIENT_ID = app_config.gateway.client_id
 
 ADMINS = app_config.telegram.admins
+
+TO_CHECK = app_config.systemd.check
+TO_CONTROL = app_config.systemd.control
+
+IBC_HOST = app_config.ibc.host
+IBC_PORT = app_config.ibc.port
+
+ibc_client = IbcClient(IBC_HOST, IBC_PORT)
 
 
 async def ibgw_short_status():
@@ -81,7 +86,10 @@ async def ibgw_short_status():
     return txt
 
 
-async def ibgw_status():
+async def ibgw_account_info():
+    """
+    Запрос информации об аккаунте из IBGW.
+    """
     ib = IBSync()
 
     txt = ""
@@ -140,146 +148,61 @@ async def ibgw_status():
 
 async def service_status():
     txt = ""
+    div = "==========================\n"
 
-    # FIXME: взять из конфига
-    services = {
-        "Gateway-l": "ibgw-live.service",
-        "Gateway-p": "ibgw-paper.service",
-        # "Trading Bot": "trading.service",
-    }
-
-    txt += "\nServices\n==========================\n"
-    for title, service in services.items():
+    # Статусы сервисов systemd
+    for service in TO_CHECK:
+        txt += f"\n{service}\n" + div
         try:
-            status = await get_service_status(service)
+            txt += await check_service(service)
         except:
-            status = "--"
-        txt += f"{title:<12}{status:>14}\n"
+            txt += "Status                  --\n"
 
     # log.info(f"Services {txt}")
 
-    # запросить INFO через телнет, отформатировать
-    ibc_info = ibc_run_command(IBC_HOST, IBC_PORT, "INFO")
-    gateway, market, hist, retry = parse_ibs_status(ibc_info)
+    # запросить INFO через телнет IBC
+    gateway, market, hist, retry = ibc_client.get_status()
 
     # log.info(f"Services {ibc_info}")
 
-    txt += "\nGateway\n==========================\n"
+    txt += "\nGateway\n" + div
     for key, val in gateway.items():
         txt += f"{key:<12}{val:>14}\n"
 
-    txt += "\nMarket data\n==========================\n"
+    txt += "\nMarket data\n" + div
     for key, val in market.items():
         txt += f"{key:<12}{val:>14}\n"
 
-    txt += "\nHistorical data\n==========================\n"
+    txt += "\nHistorical data\n" + div
     for key, val in hist.items():
         txt += f"{key:<12}{val:>14}\n"
 
     return txt.strip().replace(" ", " ") + "\n⠀", retry
 
 
-async def get_service_status(service_name: str) -> str:
-    # получить статусы сервисов systemctl (названия в конфиге)
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    name = "org.freedesktop.systemd1"
-    path = "/org/freedesktop/systemd1"
-    introspection = await bus.introspect(name, path)
-    obj = bus.get_proxy_object(name, path, introspection)
-    manager = obj.get_interface(f"{name}.Manager")
-    unit = await manager.call_load_unit(service_name)  # type: ignore
-    obj = bus.get_proxy_object(name, unit, introspection)
-    prop = obj.get_interface("org.freedesktop.DBus.Properties")
-    state = await prop.call_get(f"{name}.Unit", "ActiveState")  # type: ignore
-    return str(state.value)
+async def check_service(service_name: str) -> str:
+    res = ""
+    names = ["ActiveState", "SubState", "StateChangeTimestamp"]
 
+    values = await service_properties(service_name, names)
+    status = "{ActiveState}, {SubState}".format(**values)
+    res += f"State {status:>20}\n"
 
-def parse_ibs_status(status: str) -> tuple[dict, dict, dict, list]:
-    gateway, market, historical, retry = {}, {}, {}, []
-
-    try:
-        if "OK {" not in str(status):
-            log.error(f"Bad status: {status}")
-            s = {}
-        else:
-            s = json.loads(status.replace("OK {", "{"))
-    except Exception as e:
-        log.error("Error parsing json from INFO")
-        log.exception(e)
-        return gateway, market, historical, retry
-
-    con = s.get("connections", {})
-
-    gateway["IBC auth"] = s.get("ibc_login", "--")
-    gateway["API Server"] = con.get("Interactive Brokers API Server", "--")
-    gateway["API Clients"] = con.get("API Client", "--")
-
-    market = parse_on_off(con.get("Market Data Farm", ""))
-    historical = parse_on_off(con.get("Historical Data Farm", ""))
-
-    retry = s.get("reconnecting", [])
-
-    return gateway, market, historical, retry
-
-
-def parse_on_off(value: str) -> dict:
-    """
-    Парсит вот такое говно:
-    "ON: uscrypto, usfuture  OFFusfarm"
-    "Inactive: ushmds"
-    """
-    value = value.replace(" OFF", " OFF ")
-    value = value.replace(":", " ").replace(",", " ")
-    value = re.sub(r"\s+", " ", value).strip()
-
-    status = "--"
-    res = {}
-
-    for token in value.lower().split():
-        if token == "on":
-            status = "OK"
-        elif token == "disconnected":
-            status = token
-        elif token == "inactive":
-            status = token
-        else:
-            res[token] = str(status)
+    ts = int(values["StateChangeTimestamp"])
+    dt = datetime.utcfromtimestamp(ts // 1000000)
+    dt_str = dt.astimezone(TIME_ZONE).strftime("%Y-%m-%d %H:%M")
+    res += f"Since {dt_str:>20}\n"
 
     return res
 
 
-async def stop_ibgw(service_name: str):
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    name = "org.freedesktop.systemd1"
-    path = "/org/freedesktop/systemd1"
-    introspection = await bus.introspect(name, path)
-    obj = bus.get_proxy_object(name, path, introspection)
-    manager = obj.get_interface(f"{name}.Manager")
-    job = await manager.call_restart_unit(service_name, "fail")  # type: ignore
-    log.info(f"stop ibgw async job: {job}")
-
-
-def ibc_run_command(host, port, command):
-    """
-    Подключается в сокет канала управления IBC,
-    отправляет команду, читает ответ.
-    """
-    status = ""
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1)
-
-    try:
-        sock.connect((host, port))
-        sock.sendall((f"{command}\n").encode())
-        status = sock.recv(1024).decode("utf-8")
-        sock.sendall(b"EXIT\n")
-    except Exception as e:
-        status = f"Error: {e}"
-    finally:
-        sock.close()
-
-    return status
+async def systemd_command(command: str) -> None:
+    if command not in ["start", "stop", "restart"]:
+        raise ValueError(f"Unknown command {command}")
+    for service in TO_CONTROL:
+        if ".service" not in service:
+            service += ".service"
+        await service_command(service, command)
 
 
 HANDLERS = []
@@ -305,16 +228,6 @@ def restricted(filter: Filter, allowed_users: list):
         return wrapper
 
     return decorator
-
-
-# def register(filter):
-#     """
-#     Декоратор для регистрации обработчиков сообщений.
-#     """
-#     def decorator(function):
-#         HANDLERS.append((function, filter))
-#         return function
-#     return decorator
 
 
 class AntifreezeBot:
@@ -381,7 +294,7 @@ class AntifreezeBot:
             log.info(f"Start spamming user {chat.username}")
             await message.answer("OK", reply_markup=markup)
         else:
-            await message.answer("Already started")
+            await message.answer("Already started", reply_markup=markup)
 
     @restricted(Command("stop"), ADMINS)
     async def tg_stop(self, message: Message):
@@ -398,29 +311,40 @@ class AntifreezeBot:
     @restricted(Command("re_data"), ADMINS)
     async def tg_reconnect_data(self, message: Message):
         await self.typing(message)
-        res = ibc_run_command(IBC_HOST, IBC_PORT, "RECONNECTDATA")
+        res = ibc_client.run_command("RECONNECTDATA")
         await message.answer(f"Result: {res}")
 
     @restricted(Command("re_acc"), ADMINS)
     async def tg_reconnect_account(self, message: Message):
         await self.typing(message)
-        res = ibc_run_command(IBC_HOST, IBC_PORT, "RECONNECTACCOUNT")
+        res = ibc_client.run_command("RECONNECTACCOUNT")
         await message.answer(f"Result: {res}")
 
     @restricted(Command("ibc_restart"), ADMINS)
     async def tg_ibc_restart(self, message: Message):
         await self.typing(message)
-        res = ibc_run_command(IBC_HOST, IBC_PORT, "RESTART")
+        res = ibc_client.run_command("RESTART")
         await message.answer(f"Result: {res}")
 
     ##################################################
     ## Команды Systemd
 
+    @restricted(Command("gw_start"), ADMINS)
+    async def tg_gw_start(self, message: Message):
+        await self.typing(message)
+        await systemd_command("start")
+        await message.answer(f"Ok")
+
     @restricted(Command("gw_stop"), ADMINS)
     async def tg_gw_stop(self, message: Message):
         await self.typing(message)
-        await stop_ibgw("ibgw-paper.service")  # FIXME: убрать хардкодинг
-        log.info(f"gw stopped")
+        await systemd_command("stop")
+        await message.answer(f"Ok")
+
+    @restricted(Command("gw_restart"), ADMINS)
+    async def tg_gw_restart(self, message: Message):
+        await self.typing(message)
+        await systemd_command("restart")
         await message.answer(f"Ok")
 
     ##################################################
@@ -430,7 +354,7 @@ class AntifreezeBot:
     async def tg_account_info(self, message: Message):
         log.info(f"Account info requested")
         await self.typing(message)
-        res = await ibgw_status()
+        res = await ibgw_account_info()
         await message.answer(f"{hpre(res)}")
 
     @restricted(Text("🚀 Service⠀"), ADMINS)
