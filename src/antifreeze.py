@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import signal
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from time import monotonic, sleep
 from zoneinfo import ZoneInfo
@@ -57,6 +57,22 @@ ibc_client = IbcClient(IBC_HOST, IBC_PORT)
 systemd_client = SystemdClient()
 
 
+def readable_timedelta(duration: timedelta):
+    data = {}
+    data['days'], remaining = divmod(duration.total_seconds(), 86_400)
+    data['hours'], remaining = divmod(remaining, 3_600)
+    data['min'], data['sec'] = divmod(remaining, 60)
+
+    if duration >= timedelta(hours=1):
+        del data['sec']
+
+    parts = [f"{round(v)} {k}" for k, v in data.items() if v > 0][:2]
+    if parts:
+        return " ".join(parts)
+    else:
+        return "below 1 sec"
+
+
 async def ibgw_short_status():
     ib = IBSync()
 
@@ -74,9 +90,9 @@ async def ibgw_short_status():
             return "Not connected"
 
         fields, positions = ib.get_account_info()
-        net_value = float(fields.get("NetLiquidation", "nan"))
+        nv = float(fields.get("NetLiquidation", "nan"))
 
-        txt = f"Net Value: {net_value:0.0f} USD"
+        txt = f"Net Value:   {nv:,.0f} USD".replace(",", " ")
 
     except Exception as e:
         txt = f"ERROR: {e}"
@@ -192,8 +208,8 @@ async def check_service(service: str) -> str:
 
     ts = int(values["StateChangeTimestamp"])
     dt = datetime.utcfromtimestamp(ts // 1000000)
-    dt_str = dt.astimezone(TIME_ZONE).strftime("%Y-%m-%d %H:%M")
-    res += f"Since {dt_str:>20}\n"
+    delta = readable_timedelta(datetime.utcnow() - dt)
+    res += f"Time {delta:>21}\n"
 
     return res
 
