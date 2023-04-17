@@ -432,14 +432,15 @@ class Tester:
 
     async def healthcheck(self):
         """
-        Проверка статуса раз в минуту, отправка ошибок.
+        Проверка статуса, отправка ошибок.
         """
         prev_dt = 0
+        status_ok = True
         while self.run:
             dt = datetime.now().astimezone(TIME_ZONE)
 
-            if monotonic() - prev_dt > 30 and dt.second < 5:
-                prev_dt = monotonic()
+            if dt.second % 30 == 0:
+                await asyncio.sleep(1)
                 txt = ""
 
                 ib_status = await ibgw_short_status()
@@ -462,9 +463,20 @@ class Tester:
                     txt += hpre(f"Reconnecting:\n\n{retry}\n\n")
 
                 if txt:
-                    await self.bot.error_alert(txt.strip())
+                    # Отправлять алерты не чаще раза в час
+                    status_ok = False
+                    if monotonic() - prev_dt >= 3600:
+                        await self.bot.error_alert(txt.strip())
+                        prev_dt = monotonic()
+                else:
+                    # Таймер и флаг ошибки сбрасываются,
+                    # когда приходит нормальный статус.
+                    if status_ok is False:
+                        status_ok = True
+                        await self.bot.periodic_status("Status OK")
+                    prev_dt = 0
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.2)
         log.error("Tester healthcheck out")
 
 
