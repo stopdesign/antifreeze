@@ -443,7 +443,7 @@ class Tester:
                 if "ERROR" in str(res).upper():
                     await self.bot.error_alert(res)
                 else:
-                    await self.bot.periodic_status(res + f" {dt}")
+                    await self.bot.periodic_status(res)
             await asyncio.sleep(1)
         log.error("Tester status out")
 
