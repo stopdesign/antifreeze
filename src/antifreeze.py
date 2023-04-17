@@ -17,7 +17,7 @@ from ib_sync import IBSync, IBThread
 
 from ibc_client import IbcClient
 from settings import app_config
-from systemd import service_command, service_properties
+from systemd import SystemdClient
 
 # Enable logging
 fmt = "%(asctime).19s • %(levelname).1s • %(name)s • %(message)s"
@@ -54,6 +54,7 @@ IBC_HOST = app_config.ibc.host
 IBC_PORT = app_config.ibc.port
 
 ibc_client = IbcClient(IBC_HOST, IBC_PORT)
+systemd_client = SystemdClient()
 
 
 async def ibgw_short_status():
@@ -157,7 +158,7 @@ async def service_status():
             service = s if ".service" in s else f"{s}.service"
             txt += await check_service(service)
         except:
-            txt += "Status                  --\n"
+            txt += "Status             unknown\n"
 
     # log.info(f"Services {txt}")
 
@@ -185,7 +186,7 @@ async def check_service(service: str) -> str:
     res = ""
     props = ["ActiveState", "SubState", "StateChangeTimestamp"]
 
-    values = await service_properties(service, props)
+    values = await systemd_client.service_properties(service, props)
     status = "{ActiveState}, {SubState}".format(**values)
     res += f"State {status:>20}\n"
 
@@ -202,7 +203,7 @@ async def systemd_command(command: str) -> None:
         raise ValueError(f"Unknown command {command}")
     for s in TO_CONTROL:
         service = s if ".service" in s else f"{s}.service"
-        await service_command(service, command)
+        await systemd_client.service_command(service, command)
 
 
 HANDLERS = []
@@ -444,19 +445,19 @@ class Tester:
                 txt = ""
 
                 ib_status = await ibgw_short_status()
-                gw_status, retry = await service_status()
+                gw, retry = await service_status()
 
                 # Не получен баланс
                 if "ERROR" in ib_status.upper():
                     txt += hpre(f"IB ERROR:\n\n{ib_status}\n\n")
 
                 # IBC не вернул статус LOGGED_IN
-                if "LOGGED_IN" not in str(gw_status).upper():
-                    txt += hpre(f"Auth ERROR:\n\n{gw_status}\n\n")
+                if "LOGGED_IN" not in str(gw).upper():
+                    txt += hpre(f"Auth ERROR:\n\n{gw}\n\n")
 
                 # Один из сервисов не запущен
-                if "failed" in gw_status or "dead" in gw_status:
-                    txt += hpre(f"Service ERROR:\n\n{gw_status}\n\n")
+                if "failed" in gw or "dead" in gw or "unknown" in gw:
+                    txt += hpre(f"Service ERROR:\n\n{gw}\n\n")
 
                 # Происходит перелогин в IB
                 if retry:
@@ -483,6 +484,11 @@ class Tester:
 async def main():
     # Set up the asyncio event loop and tasks
     loop = asyncio.get_running_loop()
+
+    try:
+        await systemd_client.connect()
+    except Exception as e:
+        log.error(f"Can't connect to DBus: {e}")
 
     ab = AntifreezeBot(loop)
     tester = Tester(ab)

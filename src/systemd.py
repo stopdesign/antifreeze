@@ -10,32 +10,34 @@ DBUS_PATH = "/org/freedesktop/systemd1"
 DBUS_NAME = "org.freedesktop.systemd1"
 
 
-async def service_properties(service_name: str, properties: list) -> dict:
-    """
-    Свойства сервисов systemd.
-    """
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    introspection = await bus.introspect(DBUS_NAME, DBUS_PATH)
-    obj = bus.get_proxy_object(DBUS_NAME, DBUS_PATH, introspection)
-    manager = obj.get_interface(f"{DBUS_NAME}.Manager")
-    unit = await manager.call_load_unit(service_name)  # type: ignore
-    obj = bus.get_proxy_object(DBUS_NAME, unit, introspection)
-    prop = obj.get_interface("org.freedesktop.DBus.Properties")
-    res = {}
-    for key in properties:
-        state = await prop.call_get(f"{DBUS_NAME}.Unit", key)  # type: ignore
-        res[key] = str(state.value)
-    return res
+class SystemdClient:
+    def __init__(self) -> None:
+        pass
 
+    async def connect(self) -> bool:
+        self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        self.introspection = await self.bus.introspect(DBUS_NAME, DBUS_PATH)
+        obj = self.bus.get_proxy_object(DBUS_NAME, DBUS_PATH, self.introspection)
+        self.manager = obj.get_interface(f"{DBUS_NAME}.Manager")
+        return bool(self.manager)
 
-async def service_command(service_name: str, command: str) -> None:
-    """
-    Команды systemd через DBus
-    """
-    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    introspection = await bus.introspect(DBUS_NAME, DBUS_PATH)
-    obj = bus.get_proxy_object(DBUS_NAME, DBUS_PATH, introspection)
-    manager = obj.get_interface(f"{DBUS_NAME}.Manager")
-    job_starter = getattr(manager, f"call_{command}_unit")
-    job = await job_starter(service_name, "replace")  # type: ignore
-    log.info(f"DBus command: {service_name}, {command}, job: {job}")
+    async def service_properties(self, service: str, properties: list) -> dict:
+        """
+        Свойства сервисов systemd.
+        """
+        unit = await self.manager.call_load_unit(service)  # type: ignore
+        obj = self.bus.get_proxy_object(DBUS_NAME, unit, self.introspection)
+        prop = obj.get_interface("org.freedesktop.DBus.Properties")
+        res = {}
+        for key in properties:
+            state = await prop.call_get(f"{DBUS_NAME}.Unit", key)  # type: ignore
+            res[key] = str(state.value)
+        return res
+
+    async def service_command(self, service: str, command: str) -> None:
+        """
+        Команды systemd через DBus
+        """
+        job_starter = getattr(self.manager, f"call_{command}_unit")
+        job = await job_starter(service, "replace")  # type: ignore
+        log.info(f"DBus command: {service}, {command}, job: {job}")
