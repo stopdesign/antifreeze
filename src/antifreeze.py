@@ -243,6 +243,18 @@ class AntifreezeBot:
         self.dp.include_router(self.router)
         self.bot = Bot(token=TG_TOKEN, parse_mode="HTML")
 
+        builder = ReplyKeyboardBuilder()
+        builder.row(
+            KeyboardButton(text="🚀 Service⠀"),
+            KeyboardButton(text="💰 Account⠀"),
+        )
+        self.markup = builder.as_markup(
+            is_persistent=True,
+            resize_keyboard=True,
+        )
+
+        self.dp.startup.register(self.on_startup)
+
         # Регистрация обработчиков
         for callback, filter in HANDLERS:
             func = getattr(self, callback.__name__)
@@ -258,7 +270,11 @@ class AntifreezeBot:
         # https://github.com/aiogram/aiogram/issues/418
         await self.bot.delete_webhook(drop_pending_updates=True)
 
-        await self.dp.start_polling(self.bot, skip_updates=True, handle_signals=False)
+        await self.dp.start_polling(
+            self.bot,
+            skip_updates=True,
+            handle_signals=False,
+        )
 
     async def _stop_bot(self):
         await self.dp.stop_polling()
@@ -269,32 +285,34 @@ class AntifreezeBot:
     async def errors_handler(self, update, exception):
         log.error(f"Bot exception: {exception} | {update}")
 
+    async def on_startup(self):
+        """
+        Сообщение всем подписчикам при старте бота.
+        """
+        welcome_msg = "Antifreeze!"
+        log.info(f"Send start msg to {self.subscribers}")
+        for user_id in self.subscribers:
+            try:
+                await self.bot.send_message(
+                    user_id,
+                    welcome_msg,
+                    reply_markup=self.markup,
+                )
+            except Exception as e:
+                log.error(e)
+
     ##################################################
     # Подключение бота и подписка на спам
 
     @restricted(Command("start"), ADMINS)
     async def tg_start(self, message: Message):
         chat = message.chat
-
-        # log.error("from_user")
-        # log.info(json.dumps(message.from_user.__dict__, default=str, indent=4))
-
-        # log.error("chat")
-        # log.info(json.dumps(message.chat.__dict__, default=str, indent=4))
-
-        builder = ReplyKeyboardBuilder()
-        builder.row(
-            KeyboardButton(text="🚀 Service⠀"),
-            KeyboardButton(text="💰 Account⠀"),
-        )
-        markup = builder.as_markup(is_persistent=True, resize_keyboard=True)
-
         if chat.type == "private" and chat.id not in self.subscribers:
             self.subscribers.append(chat.id)
             log.info(f"Start spamming user {chat.username}")
-            await message.answer("OK", reply_markup=markup)
+            await message.answer("Ok", reply_markup=self.markup)
         else:
-            await message.answer("Already started", reply_markup=markup)
+            await message.answer("Nothing", reply_markup=self.markup)
 
     @restricted(Command("stop"), ADMINS)
     async def tg_stop(self, message: Message):
@@ -390,23 +408,64 @@ class Tester:
     def __init__(self, bot) -> None:
         self.run = True
         self.bot = bot
+        # self.schedule = []
 
     def stop(self) -> None:
         self.run = False
 
-    async def handler(self):
-        # Loop forever, checking the system time every second
-        prev_dt = monotonic()
+    async def status(self):
+        """
+        Отправка статуса каждый час.
+        """
+        prev_dt = 0
         while self.run:
-            if monotonic() - prev_dt > 1800:
+            dt = datetime.now().astimezone(TIME_ZONE)
+            if monotonic() - prev_dt > 300 and dt.minute == 5:
                 prev_dt = monotonic()
                 res = await ibgw_short_status()
-                if "ERROR" in res:
+                if "ERROR" in str(res).upper():
                     await self.bot.error_alert(res)
                 else:
-                    await self.bot.periodic_status(res)
-            await asyncio.sleep(0.01)
-        log.error("TESTER OUT")
+                    await self.bot.periodic_status(res + f" {dt}")
+            await asyncio.sleep(1)
+        log.error("Tester status out")
+
+    async def healthcheck(self):
+        """
+        Проверка статуса раз в минуту, отправка ошибок.
+        """
+        prev_dt = 0
+        while self.run:
+            dt = datetime.now().astimezone(TIME_ZONE)
+
+            if monotonic() - prev_dt > 30 and dt.second < 5:
+                prev_dt = monotonic()
+                txt = ""
+
+                ib_status = await ibgw_short_status()
+                gw_status, retry = await service_status()
+
+                # Не получен баланс
+                if "ERROR" in ib_status.upper():
+                    txt += hpre(f"IB ERROR:\n\n{ib_status}\n\n")
+
+                # IBC не вернул статус LOGGED_IN
+                if "LOGGED_IN" not in str(gw_status).upper():
+                    txt += hpre(f"Auth ERROR:\n\n{gw_status}\n\n")
+
+                # Один из сервисов не запущен
+                if "failed" in gw_status or "dead" in gw_status:
+                    txt += hpre(f"Service ERROR:\n\n{gw_status}\n\n")
+
+                # Происходит перелогин в IB
+                if retry:
+                    txt += hpre(f"Reconnecting:\n\n{retry}\n\n")
+
+                if txt:
+                    await self.bot.error_alert(txt.strip())
+
+            await asyncio.sleep(1)
+        log.error("Tester healthcheck out")
 
 
 async def main():
@@ -417,7 +476,8 @@ async def main():
     tester = Tester(ab)
 
     bot_task = loop.create_task(ab.start_polling())
-    time_task = loop.create_task(tester.handler())
+    st_task = loop.create_task(tester.status())
+    hc_task = loop.create_task(tester.healthcheck())
 
     def signal_handler():
         print()
@@ -428,7 +488,7 @@ async def main():
     loop.add_signal_handler(signal.SIGINT, signal_handler)
 
     # Run the event loop until either task completes
-    await asyncio.gather(bot_task, time_task)
+    await asyncio.gather(bot_task, st_task, hc_task)
 
 
 if __name__ == "__main__":
