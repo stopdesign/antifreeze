@@ -56,15 +56,17 @@ IBC_PORT = app_config.ibc.port
 ibc_client = IbcClient(IBC_HOST, IBC_PORT)
 systemd_client = SystemdClient()
 
+COMMANDS = ["start", "stop", "restart", "disable", "enable"]
+
 
 def readable_timedelta(duration: timedelta):
     data = {}
-    data['days'], remaining = divmod(duration.total_seconds(), 86_400)
-    data['hours'], remaining = divmod(remaining, 3_600)
-    data['min'], data['sec'] = divmod(remaining, 60)
+    data["days"], remaining = divmod(duration.total_seconds(), 86_400)
+    data["hours"], remaining = divmod(remaining, 3_600)
+    data["min"], data["sec"] = divmod(remaining, 60)
 
     if duration >= timedelta(hours=1):
-        del data['sec']
+        del data["sec"]
 
     parts = [f"{round(v)} {k}" for k, v in data.items() if v > 0][:2]
     if parts:
@@ -214,12 +216,13 @@ async def check_service(service: str) -> str:
     return res
 
 
-async def systemd_command(command: str) -> None:
-    if command not in ["start", "stop", "restart"]:
+async def systemd_command(service: str, command: str) -> None:
+    if command not in COMMANDS:
         raise ValueError(f"Unknown command {command}")
-    for s in TO_CONTROL:
-        service = s if ".service" in s else f"{s}.service"
-        await systemd_client.service_command(service, command)
+    if service not in TO_CONTROL:
+        raise ValueError(f"Unknown service {service}")
+    service = service if ".service" in service else f"{service}.service"
+    await systemd_client.service_command(service, command)
 
 
 HANDLERS = []
@@ -364,23 +367,22 @@ class AntifreezeBot:
     ##################################################
     ## Команды Systemd
 
-    @restricted(Command("gw_start"), ADMINS)
-    async def tg_gw_start(self, message: Message):
-        await self.typing(message)
-        await systemd_command("start")
-        await message.answer(f"Ok")
-
-    @restricted(Command("gw_stop"), ADMINS)
+    @restricted(Text(startswith="service"), ADMINS)
     async def tg_gw_stop(self, message: Message):
+        tokens = str(message.text).split()
+        if len(tokens) != 3:
+            return await message.answer("Format: service COMMAND TARGET.")
+        _, command, service = tokens
+        if command not in COMMANDS:
+            return await message.answer(f"Unknown command: {command}.")
+        if service not in TO_CONTROL:
+            return await message.answer(f"Unknown service: {service}.")
         await self.typing(message)
-        await systemd_command("stop")
-        await message.answer(f"Ok")
-
-    @restricted(Command("gw_restart"), ADMINS)
-    async def tg_gw_restart(self, message: Message):
-        await self.typing(message)
-        await systemd_command("restart")
-        await message.answer(f"Ok")
+        try:
+            await systemd_command(service, command)
+            await message.answer("Ok")
+        except Exception as e:
+            await message.answer(f"Service command error: {e}.")
 
     ##################################################
     ## Запрос информации
