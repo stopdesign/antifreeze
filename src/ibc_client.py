@@ -25,8 +25,7 @@ class IbcClient:
         value = value.replace(" OFF", " OFF ")
         value = value.lower()
         value = value.replace(" inactive", " inactive ")
-        value = value.replace(":", " ").replace(",", " ")
-        value = re.sub(r"\s+", " ", value).strip()
+        value = re.sub(r"[\s\.;:,]+", " ", value).strip()
 
         status = "--"
         res = {}

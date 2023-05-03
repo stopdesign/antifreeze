@@ -467,11 +467,11 @@ class Tester:
 
                 # Не получен баланс
                 if "ERROR" in ib_status.upper():
-                    txt += hpre(f"IB ERROR:\n\n{ib_status}\n\n")
+                    txt += hpre(f"GW API healthcheck ERROR:\n\n{ib_status}\n\n")
 
                 # IBC не вернул статус LOGGED_IN
                 if "LOGGED_IN" not in str(gw).upper():
-                    txt += hpre(f"Auth ERROR:\n\n{gw}\n\n")
+                    txt += hpre(f"GW Auth ERROR:\n\n{gw}\n\n")
 
                 # Один из сервисов не запущен
                 if "failed" in gw or "dead" in gw or "unknown" in gw:
