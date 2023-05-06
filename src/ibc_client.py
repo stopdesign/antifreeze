@@ -32,11 +32,11 @@ class IbcClient:
 
         for token in value.lower().split():
             if token == "on":
-                status = "OK"
-            elif token == "disconnected":
-                status = token
+                status = "connected"
+            elif token == "off":
+                status = "disconnected"
             elif token == "inactive":
-                status = token
+                status = "inactive"
             else:
                 res[token] = str(status)
 
