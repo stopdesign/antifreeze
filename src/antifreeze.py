@@ -1,12 +1,15 @@
 import asyncio
+import json
 import logging
 import signal
+from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import wraps
 from time import monotonic, sleep
 from zoneinfo import ZoneInfo
 
 import coloredlogs
+import redis
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, Filter, Text
@@ -15,6 +18,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.utils.markdown import hpre
 from ib_sync import IBSync, IBThread
 
+from healthcheck import Gateway
 from ibc_client import IbcClient
 from settings import app_config
 from systemd import SystemdClient
@@ -76,6 +80,9 @@ def readable_timedelta(duration: timedelta):
 
 
 async def ibgw_short_status():
+    """
+    Запрос баланса через IBGW.
+    """
     ib = IBSync()
 
     txt = ""
@@ -84,7 +91,7 @@ async def ibgw_short_status():
         IBThread(ib).start()
 
         dt = monotonic()
-        while not sleep(0.01) and monotonic() - dt < 3:
+        while not sleep(0.2) and monotonic() - dt < 5:
             if ib.nextValidOrderId > 0:
                 break
 
@@ -117,7 +124,7 @@ async def ibgw_account_info():
         IBThread(ib).start()
 
         dt = monotonic()
-        while not sleep(0.01) and monotonic() - dt < 3:
+        while not sleep(0.2) and monotonic() - dt < 5:
             if ib.nextValidOrderId > 0:
                 break
 
@@ -170,10 +177,9 @@ async def service_status():
     div = "==========================\n"
 
     # Статусы сервисов systemd
-    for s in TO_CHECK:
-        txt += f"\n{s}\n" + div
+    for service in TO_CHECK:
+        txt += f"\n{service}\n" + div
         try:
-            service = s if ".service" in s else f"{s}.service"
             txt += await check_service(service)
         except:
             txt += "Status             unknown\n"
@@ -204,6 +210,7 @@ async def check_service(service: str) -> str:
     res = ""
     props = ["ActiveState", "SubState", "StateChangeTimestamp"]
 
+    service = service if ".service" in service else f"{service}.service"
     values = await systemd_client.service_properties(service, props)
     status = "{ActiveState}, {SubState}".format(**values)
     res += f"State {status:>20}\n"
@@ -262,6 +269,10 @@ class AntifreezeBot:
         self.dp = Dispatcher()
         self.dp.include_router(self.router)
         self.bot = Bot(token=TG_TOKEN, parse_mode="HTML")
+
+        # Счетчик времени от последнего алерта
+        self.last_sound = 0
+        self.last_alert = defaultdict(float)
 
         builder = ReplyKeyboardBuilder()
         builder.row(
@@ -407,6 +418,32 @@ class AntifreezeBot:
             await message.answer(retry)
 
     ##################################################
+    ## Отправка статусов и ошибок
+
+    async def alerts(self, alerts: dict[str, str]):
+        """
+        Отправка группы алертов, звук выключается при повторах.
+        """
+        sound = False
+        messages = []
+
+        for alert_name, message in alerts.items():
+            # Звук включается, если сообщений данного типа не было давно
+            if monotonic() - self.last_alert[alert_name] > 600:
+                sound = True
+            self.last_alert[alert_name] = monotonic()
+            messages.append(f"{alert_name.replace('.', ' • ')} • {message}")
+
+        # Звук выключается, если недавно уже был
+        if monotonic() - self.last_sound < 100:
+            sound = False
+
+        if messages and sound:
+            self.last_sound = monotonic()
+
+        if messages:
+            text = "\n".join(messages)
+            await self.error_alert(text, sound)
 
     async def periodic_status(self, msg: str):
         for user_id in self.subscribers:
@@ -415,12 +452,98 @@ class AntifreezeBot:
             except Exception as e:
                 log.error(e)
 
-    async def error_alert(self, msg: str):
+    async def error_alert(self, msg: str, notify=True):
         for user_id in ADMINS:
             try:
-                await self.bot.send_message(user_id, msg)
+                dn = not bool(notify)
+                await self.bot.send_message(user_id, msg, disable_notification=dn)
             except Exception as e:
                 log.error(e)
+
+
+class RedisMonitor:
+    """
+    Мониторинг GW по данным из Redis.
+    """
+
+    def __init__(self, bot, redis_client, channel) -> None:
+        self.run = True
+        self.bot = bot
+        self.rc = redis_client
+        self.channel = channel
+        self.health = Gateway()
+
+    def stop(self) -> None:
+        self.run = False
+
+    async def periodic(self):
+        """
+        Периодические проверки статуса из Redis.
+        """
+        prev_dt = monotonic()
+
+        while self.run:
+            if monotonic() - prev_dt > 23:
+                prev_dt = monotonic()
+                try:
+                    await self.process(self.rc.get("gw_status") or "")
+                except Exception as e:
+                    log.error(f"Redis get status error: {e}")
+            await asyncio.sleep(1)
+
+        log.error("RedisMonitor status out")
+
+    async def listen(self):
+        """
+        Подписка на события (новый статус, ошибки).
+        """
+        pubsub = self.rc.pubsub()
+        pubsub.subscribe(self.channel)
+
+        while self.run:
+            try:
+                m = pubsub.get_message(timeout=0.2)
+                if m and m.get("type") == "message" and m.get("data"):
+                    await self.process(m["data"])
+            except redis.TimeoutError:
+                pass
+            except Exception as e:
+                log.error(f"Redis pubsub get_message error: {e}")
+            await asyncio.sleep(0)
+
+        log.error("RedisMonitor listen out")
+
+    async def process(self, data: str):
+        """
+        Парсинг сообщения, обработка разных типов.
+        """
+        try:
+            assert len(data) > 0
+            status = dict(json.loads(data))
+        except AssertionError:
+            log.error(f"Status is empty: '{data}'")
+            await self.bot.alerts({"Gateway.status": "empty"})
+            return
+        except Exception as e:
+            log.error(f"Status parsing error: '{data}', {e}")
+            await self.bot.alerts({"Gateway.status": "parsing error"})
+            return
+
+        if status.get("type") == "error":
+            log.info(f"ERROR: {data}")
+            await self.bot.alerts({"Gateway.error": str(data)})
+
+        if status.get("type") == "status":
+            await self.process_status(status)
+        else:
+            log.error(f"Unknown type: {data}")
+
+    async def process_status(self, status: dict):
+        """
+        Валидация разных частей статуса.
+        """
+        if alerts := self.health.check_ib_status(status):
+            await self.bot.alerts(alerts)
 
 
 class Tester:
@@ -451,49 +574,33 @@ class Tester:
 
     async def healthcheck(self):
         """
-        Проверка статуса, отправка ошибок.
+        Регулярная проверка сервисов и баланса.
         """
-        prev_dt = 0
-        status_ok = True
         while self.run:
             dt = datetime.now().astimezone(TIME_ZONE)
 
+            alerts = {}
+
             if dt.second % 30 == 0:
                 await asyncio.sleep(1)
-                txt = ""
 
+                # Статусы сервисов systemd
+                for service in TO_CHECK:
+                    try:
+                        status = await check_service(service)
+                    except Exception as e:
+                        status = f"error {e}"
+                    if "running" not in status:
+                        alerts[f"Service.{service}"] = str(status).split("\n")[0]
+
+                # Баланс аккаунта
                 ib_status = await ibgw_short_status()
-                gw, retry = await service_status()
 
-                # Не получен баланс
-                if "ERROR" in ib_status.upper():
-                    txt += hpre(f"GW API healthcheck ERROR:\n\n{ib_status}\n\n")
+                if "Net Value:" not in ib_status:
+                    alerts["Gateway.net_value"] = ib_status
 
-                # IBC не вернул статус LOGGED_IN
-                if "LOGGED_IN" not in str(gw).upper():
-                    txt += hpre(f"GW Auth ERROR:\n\n{gw}\n\n")
-
-                # Один из сервисов не запущен
-                if "failed" in gw or "dead" in gw or "unknown" in gw:
-                    txt += hpre(f"Service ERROR:\n\n{gw}\n\n")
-
-                # Происходит перелогин в IB
-                if retry:
-                    txt += hpre(f"Reconnecting:\n\n{retry}\n\n")
-
-                if txt:
-                    # Отправлять алерты не чаще раза в час
-                    status_ok = False
-                    if monotonic() - prev_dt >= 3600:
-                        await self.bot.error_alert(txt.strip())
-                        prev_dt = monotonic()
-                else:
-                    # Таймер и флаг ошибки сбрасываются,
-                    # когда приходит нормальный статус.
-                    if status_ok is False:
-                        status_ok = True
-                        await self.bot.periodic_status("Status OK")
-                    prev_dt = 0
+            if alerts:
+                await self.bot.alerts(alerts)
 
             await asyncio.sleep(0.2)
         log.error("Tester healthcheck out")
@@ -502,29 +609,46 @@ class Tester:
 async def main():
     # Set up the asyncio event loop and tasks
     loop = asyncio.get_running_loop()
+    tasks = []
 
     try:
         await systemd_client.connect()
     except Exception as e:
         log.error(f"Can't connect to DBus: {e}")
 
+    redis_client = redis.Redis(**dict(app_config.redis))
+    ibc_channel = f"{app_config.redis.db}_IBC"
+
     ab = AntifreezeBot(loop)
     tester = Tester(ab)
+    monitor = RedisMonitor(ab, redis_client, ibc_channel)
 
-    bot_task = loop.create_task(ab.start_polling())
-    st_task = loop.create_task(tester.status())
-    hc_task = loop.create_task(tester.healthcheck())
+    # Бот
+    tasks.append(loop.create_task(ab.start_polling()))
+
+    # Статус раз в час
+    tasks.append(loop.create_task(tester.status()))
+
+    # Мониторинг сервисов, запрос баланса
+    tasks.append(loop.create_task(tester.healthcheck()))
+
+    # Подписка на ошибки и статусы из Redis
+    tasks.append(loop.create_task(monitor.listen()))
+
+    # Регулярный запрос статуса из Redis
+    tasks.append(loop.create_task(monitor.periodic()))
 
     def signal_handler():
         print()
         tester.stop()
+        monitor.stop()
         ab.stop_bot()
 
     # Add a signal handler to catch the KeyboardInterrupt signal
     loop.add_signal_handler(signal.SIGINT, signal_handler)
 
     # Run the event loop until either task completes
-    await asyncio.gather(bot_task, st_task, hc_task)
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
