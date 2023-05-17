@@ -4,4 +4,5 @@ coloredlogs==15.0.1
 PyYAML==5.4.1
 pydantic==1.10.7
 redis~=4.5
+requests~=2.30
 git+ssh://git@github.com/stopdesign/ib_sync@main#egg=ib_sync

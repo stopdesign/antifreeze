@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import signal
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import coloredlogs
 import redis
+import requests
 from aiogram import Bot, Dispatcher, Router
 from aiogram.enums import ChatAction
 from aiogram.filters import Command, Filter, Text
@@ -547,13 +549,37 @@ class RedisMonitor:
 
 
 class Tester:
+    base_portal_url = "https://ndcdyn.interactivebrokers.com"
+    bulletins_url = "portal.proxy/v1/gstat/bulletins"
+
     def __init__(self, bot) -> None:
         self.run = True
         self.bot = bot
-        # self.schedule = []
+        self.sent_bulletins = []
 
     def stop(self) -> None:
         self.run = False
+
+    async def get_bulletins(self):
+        url = f"{self.base_portal_url}/{self.bulletins_url}"
+        res = requests.post(url, data={"p": "login"})
+        for bulletin in res.json():
+            h = hash(json.dumps(bulletin, default=str))
+            if h not in self.sent_bulletins:
+                self.sent_bulletins.append(h)
+                txt = re.sub("<.*?>", "", bulletin.get("message"))
+                await self.bot.periodic_status(txt)
+
+    async def check_bulletins(self):
+        prev_dt = 0
+        while self.run:
+            if monotonic() - prev_dt > 300:
+                prev_dt = monotonic()
+                try:
+                    await self.get_bulletins()
+                except Exception as e:
+                    log.error(f"check_bulletins error: {e}")
+            await asyncio.sleep(1)
 
     async def status(self):
         """
@@ -631,6 +657,9 @@ async def main():
 
     # Мониторинг сервисов, запрос баланса
     tasks.append(loop.create_task(tester.healthcheck()))
+
+    # Регулярная проверка IB bulletins
+    tasks.append(loop.create_task(tester.check_bulletins()))
 
     # Подписка на ошибки и статусы из Redis
     tasks.append(loop.create_task(monitor.listen()))
