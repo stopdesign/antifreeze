@@ -65,9 +65,11 @@ class IbcClient:
         market = self._parse_on_off(con.get("Market Data Farm", ""))
         historical = self._parse_on_off(con.get("Historical Data Farm", ""))
 
-        retry = s.get("reconnecting", [])
+        retries = s.get("reconnecting", [])
+        for retry in retries:
+            retry = re.sub(r"\d+ sec", "? sec", retry)
 
-        return gateway, market, historical, retry
+        return gateway, market, historical, retries
 
     def get_status(self) -> tuple[dict, dict, dict, list]:
         """

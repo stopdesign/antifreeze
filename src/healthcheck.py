@@ -1,3 +1,4 @@
+import re
 from copy import deepcopy
 from datetime import datetime
 
@@ -62,6 +63,8 @@ class Gateway:
         self.historical_data(hd)
 
         recon = data.get("reconnecting", [])
+        for retry in recon:
+            retry = re.sub(r"\d+ sec", "? sec", retry)
         self.reconnecting(recon)
 
     @test
