@@ -90,17 +90,24 @@ async def ibgw_short_status():
     txt = ""
     try:
         ib.connect(GATEWAY_HOST, GATEWAY_PORT, clientId=CLIENT_ID)
+
+        if ib.isConnected():
+            dt = monotonic()
+            while not sleep(0.1) and monotonic() - dt < 1:
+                if not ib.isConnected():
+                    return "Possibly client_id conflict"
+
         IBThread(ib).start()
 
         dt = monotonic()
-        while not sleep(0.2) and monotonic() - dt < 5:
+        while not sleep(0.1) and monotonic() - dt < 5:
             if ib.nextValidOrderId > 0:
                 break
 
         if not ib.nextValidOrderId > 0:
             return "Not connected"
 
-        fields, positions = ib.get_account_info()
+        fields, positions = ib.get_account_info(qualify=False)
         nv = float(fields.get("NetLiquidation", "nan"))
 
         txt = f"Net Value:   {nv:,.0f} USD".replace(",", " ")
@@ -123,22 +130,27 @@ async def ibgw_account_info():
     txt = ""
     try:
         ib.connect(GATEWAY_HOST, GATEWAY_PORT, clientId=CLIENT_ID)
+
+        if ib.isConnected():
+            dt = monotonic()
+            while not sleep(0.1) and monotonic() - dt < 1:
+                if not ib.isConnected():
+                    return "Possibly client_id conflict"
+
         IBThread(ib).start()
 
         dt = monotonic()
-        while not sleep(0.2) and monotonic() - dt < 5:
+        while not sleep(0.1) and monotonic() - dt < 5:
             if ib.nextValidOrderId > 0:
                 break
 
         if not ib.nextValidOrderId > 0:
             return "Not connected"
 
-        fields, positions = ib.get_account_info()
+        fields, positions = ib.get_account_info(qualify=False)
         net_value = float(fields.get("NetLiquidation", "nan"))
         margin_used = float(fields.get("MaintMarginReq", "nan"))
-        realized_pnl = float(fields.get("RealizedPnL", "nan"))
         unrealized_pnl = float(fields.get("UnrealizedPnL", "nan"))
-        cushion = float(fields.get("Cushion", "nan"))
 
         txt = ""
         txt += f"Account       {ib.account_id:>12}\n"
@@ -147,19 +159,18 @@ async def ibgw_account_info():
 
         txt += f"Net Value       {net_value:10.2f}\n"
         txt += f"Margin          {margin_used:10.2f}\n"
-        txt += f"Cushion         {cushion:10.2f}\n"
         txt += f"Unrlzd PnL      {unrealized_pnl:+10.2f}\n"
 
         txt += "\n"
-        txt += "              Pos      PnL\n"
+        txt += "             Pos       PnL\n"
         txt += "--------------------------\n"
 
         for p in positions:
             sid = ib.sid_for_contract(p.contract)
-            msid = sid.split("_", 1)[1]
+            msid = sid.split("_", 1)[1].replace("_", " ")
             amnt = float(p.amount)
             pnl = float(p.unrealized_pnl)
-            txt += f"{msid:<9}{amnt:+8.0f}{pnl:+9.2f}\n"
+            txt += f"{msid:<8}{amnt:+8.0f}{pnl:+10.2f}\n"
 
         txt = txt.replace("+nan", "   ·")
         txt = txt.replace(" nan", "   ·")
