@@ -63,8 +63,6 @@ class Gateway:
         self.historical_data(hd)
 
         recon = data.get("reconnecting", [])
-        for retry in recon:
-            retry = re.sub(r"\d+ sec", "? sec", retry)
         self.reconnecting(recon)
 
     @test
@@ -79,6 +77,7 @@ class Gateway:
     @test
     def reconnecting(self, value):
         txt = ", ".join(value)
+        txt = re.sub(r"\d+ sec", "? sec", txt)
         assert len(txt) == 0, f"{txt}"
 
     @test
