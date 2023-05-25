@@ -78,6 +78,7 @@ class Gateway:
     def reconnecting(self, value):
         txt = ", ".join(value)
         txt = re.sub(r"\d+ sec", "? sec", txt)
+        txt = txt.replace(" (trying for another ? seconds)", "")
         assert len(txt) == 0, f"{txt}"
 
     @test
