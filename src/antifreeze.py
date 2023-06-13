@@ -108,7 +108,7 @@ async def ibgw_short_status():
             return "Not connected"
 
         fields, positions = ib.get_account_info(qualify=False)
-        nv = float(fields.get("NetLiquidation", "nan"))
+        nv = float(fields.get("NetLiquidation-USD", "nan"))
 
         txt = f"Net Value:   {nv:,.0f} USD".replace(",", " ")
 
@@ -148,9 +148,9 @@ async def ibgw_account_info():
             return "Not connected"
 
         fields, positions = ib.get_account_info(qualify=False)
-        net_value = float(fields.get("NetLiquidation", "nan"))
-        margin_used = float(fields.get("MaintMarginReq", "nan"))
-        unrealized_pnl = float(fields.get("UnrealizedPnL", "nan"))
+        net_value = float(fields.get("NetLiquidation-USD", "nan"))
+        margin_used = float(fields.get("MaintMarginReq-USD", "nan"))
+        unrealized_pnl = float(fields.get("UnrealizedPnL-USD", "nan"))
 
         txt = ""
         txt += f"Account       {ib.account_id:>12}\n"
