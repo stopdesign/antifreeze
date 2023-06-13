@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime
 
@@ -46,6 +47,25 @@ def changes(func):
 
 
 class Gateway:
+    max_farm_delay = 30  # интервал между проверками с небольшим запасом
+    max_status_delay = 20  # время перезапуска IBC с запасом
+
+    def __init__(self) -> None:
+        # datetime.max - считаем, на момент инициализации всё ok
+        self.last_seen = defaultdict(lambda: datetime.max)
+
+    def get_dead_farms(self, data):
+        now = datetime.utcnow()
+        dead_farms = []
+        for k, v in data.items():
+            delay = int((now - self.last_seen[k]).total_seconds())
+            if v == "connected":
+                self.last_seen[k] = now
+            elif v != "inactive" and delay > self.max_farm_delay:
+                print("FAIL", str(now), k, v, delay)
+                dead_farms.append(k)
+        return ", ".join(dead_farms)
+
     @changes
     def check_ib_status(self, data) -> dict:  # type: ignore
         ibc_login = data.get("ibc_login")
@@ -72,7 +92,7 @@ class Gateway:
             delay = int((datetime.utcnow() - dt).total_seconds())
         except:
             raise AssertionError(f"Bad dt format {value}")
-        assert delay < 10, f"Large delay: {delay} sec"
+        assert delay < self.max_status_delay, f"Large delay: {delay} sec"
 
     @test
     def reconnecting(self, value):
@@ -93,12 +113,10 @@ class Gateway:
 
     @test
     def market_data(self, data):
-        data = {k: v for k, v in data.items() if v == "disconnected"}
-        dead_farms = ", ".join(data.keys())
+        dead_farms = self.get_dead_farms(data)
         assert len(dead_farms) == 0, f"failed: {dead_farms}"
 
     @test
     def historical_data(self, data):
-        data = {k: v for k, v in data.items() if v == "disconnected"}
-        dead_farms = ", ".join(data.keys())
+        dead_farms = self.get_dead_farms(data)
         assert len(dead_farms) == 0, f"failed: {dead_farms}"

@@ -477,6 +477,8 @@ class AntifreezeBot:
 class RedisMonitor:
     """
     Мониторинг GW по данным из Redis.
+
+    Проверка запускается по расписанию и при получении сообщений из pubsub.
     """
 
     def __init__(self, bot, redis_client, channel) -> None:
