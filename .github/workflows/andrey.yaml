@@ -1,14 +1,11 @@
-name: deploy
+name: Deploy | Andrey
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 env:
   USER: root
-  SERVER: 144.202.50.93
+  SERVER: 195.211.98.147
 
 jobs:
   deploy:

@@ -1,0 +1,36 @@
+name: Deploy | Gregory
+
+on:
+  # push:
+  #   branches:
+  #     - main
+  workflow_dispatch:
+
+env:
+  USER: root
+  SERVER: 144.202.50.93
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Deploy
+      run: | 
+        PROJECT=$(echo $GITHUB_REPOSITORY | awk -F"/" '{print (NF>1)? $NF : ""}')
+        eval `ssh-agent -s`
+        ssh-add - <<< "${{ secrets.MOBY_KEY }}"
+        rsync -e "ssh -o StrictHostKeyChecking=no" -rtvu . $USER@$SERVER:/opt/$PROJECT
+        ssh $USER@$SERVER << EOF
+          echo -e "Deploying $PROJECT...\n"
+          cd /opt/$PROJECT
+          git ls-files . --exclude-standard --others | xargs --no-run-if-empty rm
+          virtualenv -p python3 .venv
+          sh -c "make pip"
+          sh -c "systemctl restart $PROJECT*"
+          echo -e "\nServices restarted:"
+          sh -c "systemctl status $PROJECT*"
+        EOF
